@@ -1,13 +1,9 @@
 import os
 import requests
 import logging
-import json
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext, CallbackQueryHandler
-from telegram.constants import ParseMode
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext
 from dotenv import load_dotenv
-from urllib.parse import quote
-import time
 
 # Load environment variables
 load_dotenv()
@@ -19,631 +15,98 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Get credentials from .env
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-API_KEY = os.getenv('API_KEY')
 
-class TelegramInfoService:
-    """Service to fetch Telegram user information from API"""
-    
-    def __init__(self):
-        self.base_url = "https://akashhacker.gt.tc/telegram.php"
-        self.api_key = API_KEY
-        self.session = requests.Session()
-        self.session.timeout = 15
-        
-        # Set default headers
-        self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': 'application/json',
-            'Accept-Language': 'en-US,en;q=0.9',
-        }
-        
-        # Add API key if provided
-        if self.api_key:
-            self.headers['Authorization'] = f'Bearer {self.api_key}'
-            self.headers['API-Key'] = self.api_key
-    
-    def get_telegram_info(self, username: str):
-        """
-        Fetch Telegram profile information for given username
-        
-        Args:
-            username: Telegram username (without @)
-            
-        Returns:
-            dict: API response data or None if error
-        """
-        try:
-            # Clean username (remove @ if present)
-            clean_username = username.replace('@', '').strip()
-            
-            # Prepare URL with parameters
-            params = {'username': clean_username}
-            
-            logger.info(f"Fetching info for username: {clean_username}")
-            
-            # Make API request
-            start_time = time.time()
-            response = self.session.get(
-                self.base_url,
-                params=params,
-                headers=self.headers,
-                timeout=15
-            )
-            response_time = time.time() - start_time
-            
-            logger.info(f"API Response Time: {response_time:.2f}s | Status: {response.status_code}")
-            
-            # Check if request was successful
-            if response.status_code != 200:
-                logger.error(f"API returned status code: {response.status_code}")
-                logger.error(f"Response text: {response.text[:200]}")
-                return {
-                    'success': False,
-                    'error': f"API Error: Status Code {response.status_code}",
-                    'status_code': response.status_code
-                }
-            
-            # Try to parse JSON response
-            try:
-                data = response.json()
-                
-                # Validate response structure
-                if not isinstance(data, dict):
-                    logger.error(f"Invalid response type: {type(data)}")
-                    return {
-                        'success': False,
-                        'error': 'Invalid API response format',
-                        'raw_response': str(data)[:500]
-                    }
-                
-                # Check if API indicates success
-                if data.get('success') is False:
-                    error_msg = data.get('error', 'Unknown API error')
-                    logger.error(f"API reported failure: {error_msg}")
-                    return {
-                        'success': False,
-                        'error': error_msg,
-                        'api_response': data
-                    }
-                
-                # Add response time to data
-                data['response_time'] = f"{response_time:.2f}s"
-                
-                logger.info(f"Successfully fetched data for {clean_username}")
-                return data
-                
-            except json.JSONDecodeError as e:
-                logger.error(f"JSON decode error: {e}")
-                logger.error(f"Raw response: {response.text[:500]}")
-                return {
-                    'success': False,
-                    'error': f'Invalid JSON response: {str(e)}',
-                    'raw_response': response.text[:500]
-                }
-                
-        except requests.exceptions.Timeout:
-            logger.error(f"Request timeout for username: {username}")
-            return {
-                'success': False,
-                'error': 'Request timeout. Please try again.',
-                'timeout': True
-            }
-            
-        except requests.exceptions.ConnectionError:
-            logger.error(f"Connection error for username: {username}")
-            return {
-                'success': False,
-                'error': 'Connection error. Please check your internet.',
-                'connection_error': True
-            }
-            
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Request exception for {username}: {e}")
-            return {
-                'success': False,
-                'error': f'Network error: {str(e)}',
-                'exception': str(e)
-            }
-            
-        except Exception as e:
-            logger.error(f"Unexpected error for {username}: {e}")
-            return {
-                'success': False,
-                'error': f'Unexpected error: {str(e)}',
-                'exception_type': type(e).__name__
-            }
-
-class TelegramBot:
+class TelegramInfoBot:
     def __init__(self, token):
         self.application = Application.builder().token(token).build()
-        self.api_service = TelegramInfoService()
         self.setup_handlers()
     
     def setup_handlers(self):
-        """Setup all bot handlers"""
-        # Command handlers
         self.application.add_handler(CommandHandler("start", self.start_command))
-        self.application.add_handler(CommandHandler("help", self.help_command))
         self.application.add_handler(CommandHandler("info", self.info_command))
-        self.application.add_handler(CommandHandler("search", self.info_command))
-        self.application.add_handler(CommandHandler("about", self.about_command))
-        
-        # Message handler for direct username input
-        self.application.add_handler(MessageHandler(
-            filters.TEXT & ~filters.COMMAND, 
-            self.handle_message
-        ))
-        
-        # Callback query handler for buttons
-        self.application.add_handler(CallbackQueryHandler(self.button_callback))
-        
-        # Error handler
+        self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
         self.application.add_error_handler(self.error_handler)
     
     async def start_command(self, update: Update, context: CallbackContext):
-        """Send a message when the command /start is issued."""
-        user = update.effective_user
-        
-        welcome_message = f"""
-👋 *Welcome {user.first_name}!*
-
-🤖 *Telegram Info Bot*
-
-I can fetch detailed information about any Telegram user profile using their username.
-
-*📌 How to use:*
-1. Send a Telegram username directly
-   Example: `IMMU_DONN` or `@IMMU_DONN`
-
-2. Use the command:
-   `/info username`
-   Example: `/info IMMU_DONN`
-
-*✨ Features:*
-• Profile information
-• Contact details
-• Activity status
-• Linked channels/groups
-• Profile analysis
-
-Use /help for detailed instructions.
-        """
-        
-        # Create inline keyboard
-        keyboard = [
-            [
-                InlineKeyboardButton("🔍 Search Username", switch_inline_query_current_chat=""),
-                InlineKeyboardButton("📋 Example", callback_data="example")
-            ],
-            [
-                InlineKeyboardButton("❓ Help", callback_data="help"),
-                InlineKeyboardButton("📊 Stats", callback_data="stats")
-            ]
-        ]
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
         await update.message.reply_text(
-            welcome_message,
-            reply_markup=reply_markup,
-            parse_mode=ParseMode.MARKDOWN,
-            disable_web_page_preview=True
-        )
-    
-    async def help_command(self, update: Update, context: CallbackContext):
-        """Send help message"""
-        help_text = """
-*🤖 Telegram Info Bot - Help Guide*
-
-*Basic Commands:*
-/start - Start the bot
-/help - Show this help message
-/about - About this bot
-
-*Main Command:*
-/info <username> - Get Telegram profile information
-/search <username> - Same as /info
-
-*Examples:*
-`/info IMMU_DONN`
-`/search username`
-`@IMMU_DONN` (send directly)
-
-*Direct Input:*
-Simply send any Telegram username with or without @
-
-*⚠️ Important Notes:*
-• Works only with public profiles
-• Username must exist
-• Limited to 1 request every few seconds
-• Information accuracy depends on API
-
-*Support:*
-For issues or feedback, contact the developer.
-        """
-        
-        await update.message.reply_text(
-            help_text,
-            parse_mode=ParseMode.MARKDOWN,
-            disable_web_page_preview=True
+            "🤖 *Telegram Info Bot*\n\n"
+            "Send me a Telegram username to get information.\n"
+            "Example: `IMMU_DONN` or `@username`\n\n"
+            "Or use: `/info username`",
+            parse_mode='Markdown'
         )
     
     async def info_command(self, update: Update, context: CallbackContext):
-        """Handle /info and /search commands"""
         if not context.args:
-            await update.message.reply_text(
-                "❌ *Please provide a Telegram username.*\n\n"
-                "*Example:*\n"
-                "`/info IMMU_DONN`\n"
-                "`/search username`\n\n"
-                "Or simply send the username directly.",
-                parse_mode=ParseMode.MARKDOWN
-            )
+            await update.message.reply_text("Please provide a username. Example: `/info IMMU_DONN`", parse_mode='Markdown')
             return
         
-        username = ' '.join(context.args)
-        await self.process_username(update, context, username)
-    
-    async def about_command(self, update: Update, context: CallbackContext):
-        """Show about information"""
-        about_text = """
-*🤖 About Telegram Info Bot*
-
-*Version:* 1.0.0
-*Developer:* Information Services
-*API Source:* External Telegram Info API
-
-*Features:*
-• Fetches Telegram profile information
-• Shows profile details and stats
-• Displays linked channels/groups
-• Provides profile analysis
-
-*Data Source:*
-Uses public Telegram API through third-party service.
-
-*Privacy:*
-• Only works with public profiles
-• No data storage
-• Respects user privacy
-
-*⚠️ Disclaimer:*
-This bot provides publicly available information only.
-Use responsibly and respect privacy.
-        """
-        
-        await update.message.reply_text(
-            about_text,
-            parse_mode=ParseMode.MARKDOWN,
-            disable_web_page_preview=True
-        )
+        username = context.args[0]
+        await self.get_telegram_info(update, username)
     
     async def handle_message(self, update: Update, context: CallbackContext):
-        """Handle regular text messages (username input)"""
-        text = update.message.text.strip()
-        
-        # Check if it's a username (alphanumeric, underscores, 5-32 chars)
-        clean_text = text.replace('@', '').strip()
-        
-        if len(clean_text) < 5 or len(clean_text) > 32:
-            await update.message.reply_text(
-                "❌ *Invalid username format.*\n\n"
-                "Telegram usernames must be 5-32 characters long "
-                "and contain only letters, numbers, and underscores.\n\n"
-                "*Example:* `IMMU_DONN` or `@username`",
-                parse_mode=ParseMode.MARKDOWN
-            )
-            return
-        
-        # Process the username
-        await self.process_username(update, context, clean_text)
+        text = update.message.text.strip().replace('@', '')
+        await self.get_telegram_info(update, text)
     
-    async def process_username(self, update: Update, context: CallbackContext, username: str):
-        """Process username and fetch information"""
-        # Send processing message
-        processing_msg = await update.message.reply_text(
-            f"🔍 *Searching for @{username}...*\n"
-            f"Please wait while I fetch the information...",
-            parse_mode=ParseMode.MARKDOWN
-        )
-        
+    async def get_telegram_info(self, update: Update, username: str):
         try:
-            # Fetch data from API
-            data = self.api_service.get_telegram_info(username)
+            # Send processing message
+            msg = await update.message.reply_text(f"🔍 Searching for @{username}...")
             
-            if not data:
-                await processing_msg.edit_text(
-                    "❌ *Service Unavailable*\n\n"
-                    "The information service is currently unavailable. "
-                    "Please try again later.",
-                    parse_mode=ParseMode.MARKDOWN
-                )
-                return
+            # Call API
+            response = requests.get(
+                "https://akashhacker.gt.tc/telegram.php",
+                params={'username': username},
+                timeout=10
+            )
             
-            if not data.get('success', False):
-                error_msg = data.get('error', 'Unknown error occurred')
+            if response.status_code == 200:
+                data = response.json()
                 
-                # User-friendly error messages
-                if 'timeout' in data:
-                    error_display = "⏱️ *Request Timeout*\n\nPlease try again in a moment."
-                elif 'connection_error' in data:
-                    error_display = "🌐 *Connection Error*\n\nCheck your internet connection."
-                elif 'status_code' in data:
-                    if data['status_code'] == 404:
-                        error_display = f"❌ *User Not Found*\n\nUsername `@{username}` not found or profile is private."
-                    elif data['status_code'] == 429:
-                        error_display = "🚫 *Rate Limited*\n\nToo many requests. Please wait a moment."
-                    else:
-                        error_display = f"❌ *API Error {data['status_code']}*\n\n{error_msg}"
-                elif 'username' in error_msg.lower() or 'not found' in error_msg.lower():
-                    error_display = f"❌ *User Not Found*\n\nUsername `@{username}` not found or profile is private."
+                if data.get('success'):
+                    # Format response
+                    profile = data['data']['profile']
+                    contacts = data['data']['contacts']
+                    activity = data['data']['activity']
+                    
+                    response_text = (
+                        f"📱 *Telegram Profile: @{username}*\n\n"
+                        f"👤 *Name:* {profile.get('name', 'N/A')}\n"
+                        f"📝 *Bio:* {profile.get('bio', 'N/A')}\n"
+                        f"🔗 *Link:* {contacts.get('telegram_link', 'N/A')}\n"
+                        f"👥 *Subscribers:* {activity.get('subscribers', 'N/A')}\n"
+                        f"📊 *Activity Score:* {activity.get('activity_score', 'N/A')}/100\n\n"
+                        f"⏱️ *API Time:* {data.get('processing_time', 'N/A')}"
+                    )
+                    
+                    await msg.edit_text(response_text, parse_mode='Markdown')
                 else:
-                    error_display = f"❌ *Error*\n\n{error_msg}"
+                    await msg.edit_text(f"❌ User @{username} not found or profile is private.")
+            else:
+                await msg.edit_text("❌ API Error. Please try again later.")
                 
-                await processing_msg.edit_text(
-                    error_display,
-                    parse_mode=ParseMode.MARKDOWN
-                )
-                return
-            
-            # Format and send successful response
-            formatted_response = self.format_telegram_info(data, username)
-            
-            # Create inline keyboard for actions
-            keyboard = [
-                [
-                    InlineKeyboardButton("🔗 Open Profile", url=f"https://t.me/{username}"),
-                    InlineKeyboardButton("💬 Direct Message", url=f"tg://resolve?domain={username}")
-                ],
-                [
-                    InlineKeyboardButton("🔄 Search Again", callback_data="search_again"),
-                    InlineKeyboardButton("📊 Full Details", callback_data=f"details_{username}")
-                ]
-            ]
-            
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            await processing_msg.edit_text(
-                formatted_response,
-                reply_markup=reply_markup,
-                parse_mode=ParseMode.MARKDOWN,
-                disable_web_page_preview=True
-            )
-            
         except Exception as e:
-            logger.error(f"Error processing username {username}: {e}")
-            await processing_msg.edit_text(
-                "❌ *Processing Error*\n\n"
-                "An unexpected error occurred while processing your request. "
-                "Please try again later.",
-                parse_mode=ParseMode.MARKDOWN
-            )
-    
-    def format_telegram_info(self, data: dict, username: str) -> str:
-        """Format Telegram information into readable message"""
-        try:
-            # Start building response
-            response_lines = []
-            response_lines.append(f"📱 *TELEGRAM PROFILE: @{username}*")
-            response_lines.append("━" * 30)
-            
-            # Basic info
-            if 'developer' in data:
-                response_lines.append(f"*API By:* {data['developer']}")
-            
-            if 'timestamp' in data:
-                from datetime import datetime
-                try:
-                    dt = datetime.fromtimestamp(data['timestamp'])
-                    response_lines.append(f"*Fetched:* {dt.strftime('%Y-%m-%d %H:%M:%S')}")
-                except:
-                    pass
-            
-            response_lines.append("")
-            
-            # Profile information
-            if 'data' in data and 'profile' in data['data']:
-                profile = data['data']['profile']
-                
-                response_lines.append("*👤 PROFILE INFO*")
-                response_lines.append(f"• *Name:* {profile.get('name', 'N/A')}")
-                response_lines.append(f"• *Bio:* {profile.get('bio', 'N/A')}")
-                
-                # Status indicators
-                status = []
-                if profile.get('verified'):
-                    status.append("✅ Verified")
-                if profile.get('premium'):
-                    status.append("⭐ Premium")
-                if profile.get('has_photo'):
-                    status.append("🖼️ Has Photo")
-                
-                if status:
-                    response_lines.append(f"• *Status:* {', '.join(status)}")
-                
-                response_lines.append(f"• *Type:* {profile.get('profile_type', 'N/A').title()}")
-                response_lines.append("")
-            
-            # Activity information
-            if 'data' in data and 'activity' in data['data']:
-                activity = data['data']['activity']
-                
-                response_lines.append("*📊 ACTIVITY*")
-                response_lines.append(f"• *Status:* {activity.get('online_status', 'N/A').title()}")
-                
-                if 'last_seen' in activity:
-                    response_lines.append(f"• *Last Seen:* {activity.get('last_seen', 'N/A')}")
-                
-                if 'subscribers' in activity:
-                    response_lines.append(f"• *Subscribers:* {self.format_number(activity.get('subscribers', 0))}")
-                
-                if 'activity_score' in activity:
-                    score = activity.get('activity_score', 0)
-                    response_lines.append(f"• *Activity Score:* {score}/100")
-                
-                response_lines.append("")
-            
-            # Contacts
-            if 'data' in data and 'contacts' in data['data']:
-                contacts = data['data']['contacts']
-                
-                response_lines.append("*📞 CONTACTS*")
-                response_lines.append(f"• *Profile:* {'Public 🔓' if contacts.get('is_public') else 'Private 🔒'}")
-                
-                if contacts.get('telegram_link'):
-                    response_lines.append(f"• *Link:* {contacts.get('telegram_link')}")
-                
-                response_lines.append("")
-            
-            # Channels/Groups count
-            if 'data' in data and 'channels_groups' in data['data']:
-                channels = data['data']['channels_groups']
-                if channels:
-                    response_lines.append(f"*📢 LINKED CHANNELS/GROUPS:* {len(channels)}")
-                    
-                    # Show first 3 channels
-                    for i, channel in enumerate(channels[:3]):
-                        if i == 2 and len(channels) > 3:
-                            response_lines.append(f"• ... and {len(channels) - 2} more")
-                            break
-                        if 'username' in channel:
-                            response_lines.append(f"• @{channel['username']}")
-                    
-                    response_lines.append("")
-            
-            # Analysis
-            if 'data' in data and 'analysis' in data['data']:
-                analysis = data['data']['analysis']
-                
-                response_lines.append("*📈 ANALYSIS*")
-                response_lines.append(f"• *Profile Quality:* {analysis.get('profile_quality', 'N/A').title()}")
-                response_lines.append(f"• *Account Age:* {analysis.get('account_age', 'N/A')}")
-                response_lines.append("")
-            
-            # Processing time
-            processing_time = data.get('processing_time', data.get('response_time', 'N/A'))
-            response_lines.append(f"⏱️ *Processing Time:* {processing_time}")
-            
-            return "\n".join(response_lines)
-            
-        except Exception as e:
-            logger.error(f"Error formatting response: {e}")
-            return f"📱 *TELEGRAM PROFILE: @{username}*\n\n⚠️ *Error formatting detailed information.*\n\nBasic information retrieved successfully."
-    
-    def format_number(self, num: int) -> str:
-        """Format large numbers with K/M suffix"""
-        if num >= 1000000:
-            return f"{num/1000000:.1f}M"
-        elif num >= 1000:
-            return f"{num/1000:.1f}K"
-        return str(num)
-    
-    async def button_callback(self, update: Update, context: CallbackContext):
-        """Handle button callbacks"""
-        query = update.callback_query
-        await query.answer()
-        
-        data = query.data
-        
-        if data == "example":
-            await query.edit_message_text(
-                "📌 *Example Usage*\n\n"
-                "Try searching for these example usernames:\n\n"
-                "• `IMMU_DONN`\n"
-                "• `telegram`\n"
-                "• `durov`\n\n"
-                "Or use the command:\n"
-                "`/info username`",
-                parse_mode=ParseMode.MARKDOWN
-            )
-        
-        elif data == "help":
-            await self.help_command(update, context)
-        
-        elif data == "stats":
-            await query.edit_message_text(
-                "📊 *Bot Statistics*\n\n"
-                "*Service Status:* ✅ Operational\n"
-                "*API Version:* 1.0\n"
-                "*Requests Today:* Limited\n"
-                "*Response Time:* < 2s\n\n"
-                "The bot is currently working normally.",
-                parse_mode=ParseMode.MARKDOWN
-            )
-        
-        elif data == "search_again":
-            await query.edit_message_text(
-                "🔍 *Search Again*\n\n"
-                "Please send a Telegram username:\n\n"
-                "*Examples:*\n"
-                "`IMMU_DONN`\n"
-                "`@username`\n"
-                "`telegram`",
-                parse_mode=ParseMode.MARKDOWN
-            )
-        
-        elif data.startswith("details_"):
-            username = data.replace("details_", "")
-            await query.edit_message_text(
-                f"📋 *Full Details for @{username}*\n\n"
-                "To get full details, please use the search command:\n\n"
-                f"`/info {username}`\n\n"
-                "This will fetch the complete profile information.",
-                parse_mode=ParseMode.MARKDOWN
-            )
+            logger.error(f"Error: {e}")
+            try:
+                await msg.edit_text("❌ An error occurred. Please try again.")
+            except:
+                await update.message.reply_text("❌ An error occurred. Please try again.")
     
     async def error_handler(self, update: Update, context: CallbackContext):
-        """Log errors and send user-friendly message"""
-        logger.error(f"Update {update} caused error {context.error}", exc_info=context.error)
-        
-        # Try to send error message to user
-        try:
-            if update and update.effective_message:
-                await update.effective_message.reply_text(
-                    "❌ *An error occurred*\n\n"
-                    "Please try again in a moment. "
-                    "If the problem persists, contact support.",
-                    parse_mode=ParseMode.MARKDOWN
-                )
-        except:
-            pass
+        logger.error(f"Error: {context.error}")
     
     def run(self):
-        """Run the bot"""
-        logger.info("🤖 Telegram Info Bot is starting...")
-        print("=" * 50)
-        print("🤖 TELEGRAM INFO BOT")
-        print("=" * 50)
-        print(f"Bot Token: {'✓ Set' if TELEGRAM_BOT_TOKEN else '✗ Missing'}")
-        print(f"API Key: {'✓ Set' if API_KEY else '✗ Not Required'}")
-        print("=" * 50)
-        
-        if not TELEGRAM_BOT_TOKEN:
-            print("❌ ERROR: TELEGRAM_BOT_TOKEN not found in .env file!")
-            print("Please add your bot token to the .env file.")
-            return
-        
-        print("✅ Bot is running... Press Ctrl+C to stop.")
-        print("=" * 50)
-        
-        # Run the bot
-        self.application.run_polling(
-            allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=True
-        )
+        logger.info("Bot starting...")
+        self.application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 def main():
-    """Main function to start the bot"""
-    try:
-        bot = TelegramBot(TELEGRAM_BOT_TOKEN)
-        bot.run()
-    except KeyboardInterrupt:
-        print("\n👋 Bot stopped by user.")
-    except Exception as e:
-        logger.error(f"Fatal error: {e}")
-        print(f"❌ Fatal error: {e}")
+    if not TELEGRAM_BOT_TOKEN:
+        print("❌ Error: TELEGRAM_BOT_TOKEN not found!")
+        return
+    
+    bot = TelegramInfoBot(TELEGRAM_BOT_TOKEN)
+    bot.run()
 
 if __name__ == '__main__':
     main()
